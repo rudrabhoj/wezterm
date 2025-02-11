@@ -4,6 +4,7 @@ use config::{ConfigHandle, GpuInfo, WebGpuPowerPreference};
 use std::cell::RefCell;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+use wgpu::CreateSurfaceError;
 use window::bitmaps::Texture2d;
 use window::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
@@ -82,7 +83,7 @@ impl Texture2d for WebGpuTexture {
         let (im_width, im_height) = im.image_dimensions();
 
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
@@ -93,7 +94,7 @@ impl Texture2d for WebGpuTexture {
                 aspect: wgpu::TextureAspect::All,
             },
             im.pixel_data_slice(),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(im_width as u32 * 4),
                 rows_per_image: Some(im_height as u32),
@@ -214,6 +215,11 @@ impl WebGpuState {
         dimensions: Dimensions,
         config: &ConfigHandle,
     ) -> anyhow::Result<Self> {
+        match window {
+            Window::Wayland(_) => log::warn!("On a wayland surface!"),
+            Window::X11(_) => log::warn!("On an X11 surface!"),
+        }
+
         let handle = RawHandlePair::new(window);
         Self::new_impl(handle, dimensions, config).await
     }
@@ -224,22 +230,66 @@ impl WebGpuState {
         config: &ConfigHandle,
     ) -> anyhow::Result<Self> {
         let backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends,
-            ..Default::default()
-        });
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+
+        log::warn!("Trying to create surface!");
+
         let surface = unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&handle)?)?
+            log::warn!("Trying to create surface!");
+
+            let surface_target_result = wgpu::SurfaceTargetUnsafe::from_window(&handle);
+
+            let surface_target = match surface_target_result {
+                Ok(raw_data) => {
+                    log::warn!("Successful in converting to unsafe target!");
+                    raw_data
+                }
+                Err(err) => match err {
+                    HandleError::Unavailable => {
+                        panic!("Panic during creation of surface target. The underlying handle is not available.");
+                    }
+                    HandleError::NotSupported => {
+                        panic!("Panic during creation of surface target. The underlying handle cannot be represented using the types in this crate.");
+                    }
+                    _ => {
+                        panic!("Panic during creation of surface target. IDK reason.");
+                    }
+                },
+            };
+
+            let unsafe_surface_result = instance.create_surface_unsafe(surface_target);
+
+            let unsafe_surface = match unsafe_surface_result {
+                Ok(data) => {
+                    log::warn!("Successful in converting to unsafe surface!");
+                    data
+                }
+                Err(err) => {
+                    panic!("Failed to create unsafe_surface! Reason: {:?}", err);
+                }
+            };
+
+            unsafe_surface
         };
+
+        log::warn!("Level 1");
 
         let mut adapter: Option<wgpu::Adapter> = None;
 
+        log::warn!("Level 2");
+
         if let Some(preference) = &config.webgpu_preferred_adapter {
+            log::warn!("Level 3");
             for a in instance.enumerate_adapters(backends) {
+                log::warn!("Level 4");
+                log::warn!("{:?}", a);
+
                 if !a.is_surface_supported(&surface) {
                     let info = adapter_info_to_gpu_info(a.get_info());
                     log::warn!("{} is not compatible with surface", info.to_string());
                     continue;
+                } else {
+                    log::warn!("This is fineeeeeeeeeeee");
                 }
 
                 let info = a.get_info();
@@ -288,6 +338,8 @@ impl WebGpuState {
         }
 
         if adapter.is_none() {
+            //::// log::warn!("No adapter atm, requesting one....");
+
             adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: match config.webgpu_power_preference {
@@ -458,13 +510,13 @@ impl WebGpuState {
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
